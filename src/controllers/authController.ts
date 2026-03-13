@@ -101,10 +101,19 @@ export const login = asyncHandler(async (req: Request, res: Response) => {
   );
   const refreshToken = signRefreshToken(user._id.toString());
 
-  res
-    .cookie("access_token", accessToken, accessCookieOptions)
-    .cookie("refresh_token", refreshToken, refreshCookieOptions);
+  res.cookie('access_token', accessToken, {
+  httpOnly: true,
+  secure:   true,           // required for cross-domain
+  sameSite: 'none',         // required for cross-domain — NOT 'lax' or 'strict'
+  maxAge:   15 * 60 * 1000, // 15 minutes
+});
 
+res.cookie('refresh_token', refreshToken, {
+  httpOnly: true,
+  secure:   true,
+  sameSite: 'none',         // same here
+  maxAge:   7 * 24 * 60 * 60 * 1000, // 7 days
+});
   sendSuccess(res, {
     user: {
       id: user._id,
