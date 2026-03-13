@@ -60,6 +60,7 @@ app.use(
 const allowedOrigins = [
   "http://localhost:3000",
   "http://localhost:5173",
+  "https://gg-chatbot-frontend.onrender.com",
   process.env.CLIENT_URL,
 ].filter(Boolean) as string[];
 
