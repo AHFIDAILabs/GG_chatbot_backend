@@ -102,30 +102,29 @@ async function retrieveChunks(
   const queryEmbedding = await embedText(question);
 
   if (queryEmbedding.length > 0) {
-    // Atlas Vector Search aggregation pipeline
-    // $search is a valid Atlas stage not in Mongoose's PipelineStage union,
-    // so we cast via (unknown) to satisfy the type checker while keeping
-    // full runtime correctness.
+    // Atlas Vector Search index requires $vectorSearch (not $search/knnBeta).
+    // numCandidates controls the HNSW search breadth; limit caps pre-filter results.
+    // Filter fields (pillar, ageGroup) applied via $match after $vectorSearch because
+    // the index was created without explicit filter-field definitions.
     const pipeline = [
       {
-        $search: {
+        $vectorSearch: {
           index: "chunk_vector_index",
-          knnBeta: {
-            vector: queryEmbedding,
-            path: "embedding",
-            k: topK * 2,
-            filter,
-          },
+          path: "embedding",
+          queryVector: queryEmbedding,
+          numCandidates: topK * 10,
+          limit: topK * 4,
         },
       },
-      { $limit: topK * 2 },
+      ...(Object.keys(filter).length > 0 ? [{ $match: filter }] : []),
+      { $limit: topK },
       {
         $project: {
           text: 1,
           source: 1,
           pillar: 1,
           sessionTitle: 1,
-          score: { $meta: "searchScore" },
+          score: { $meta: "vectorSearchScore" },
         },
       },
     ] as unknown as PipelineStage[];
@@ -322,18 +321,35 @@ export const sendMessage = asyncHandler(async (req: Request, res: Response) => {
       ? `Context from GGCL curriculum:\n${contextBlock}\n\nGirl's question: ${question}`
       : question;
 
-    // ── Stream from Groq ──────────────────────
-    const stream = await groq.chat.completions.create({
-      model: GROQ_MODEL,
-      max_tokens: 500,
-      temperature: 0.6,
-      stream: true,
-      messages: [
-        { role: "system", content: systemPrompt },
-        ...historyMessages,
-        { role: "user", content: userMessageWithContext },
-      ],
-    });
+    // ── Stream from Groq (with rate-limit retry) ──────────────────────
+    let stream: Awaited<ReturnType<typeof groq.chat.completions.create>>;
+    let lastErr: unknown;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        stream = await groq.chat.completions.create({
+          model: GROQ_MODEL,
+          max_tokens: 500,
+          temperature: 0.6,
+          stream: true,
+          messages: [
+            { role: "system", content: systemPrompt },
+            ...historyMessages,
+            { role: "user", content: userMessageWithContext },
+          ],
+        });
+        lastErr = undefined;
+        break;
+      } catch (err: any) {
+        lastErr = err;
+        if (err?.status === 429 && attempt < 2) {
+          const retryAfter = parseInt(err?.headers?.["retry-after"] ?? "10", 10);
+          await new Promise((r) => setTimeout(r, retryAfter * 1000));
+        } else {
+          throw err;
+        }
+      }
+    }
+    if (lastErr) throw lastErr;
 
     let fullAnswer = "";
     let tokensUsed = 0;

@@ -14,7 +14,8 @@ const HF_API_KEY = process.env.HUGGINGFACE_API_KEY;
 const HF_MODEL   = process.env.HF_EMBEDDING_MODEL
   ?? 'sentence-transformers/all-MiniLM-L6-v2';
 
-const HF_URL = `https://api-inference.huggingface.co/pipeline/feature-extraction/${HF_MODEL}`;
+// HuggingFace Serverless Inference API v1 — feature-extraction endpoint
+const HF_URL = `https://router.huggingface.co/hf-inference/models/${HF_MODEL}/v1/feature-extraction`;
 
 // ─────────────────────────────────────────────
 // Embed a single string
@@ -45,9 +46,11 @@ export async function embedText(text: string): Promise<number[]> {
       return [];
     }
 
-    // HF returns number[] for single string input
-    const data = await res.json() as number[];
-    return data;
+    // New /models/ endpoint returns number[][] (nested) for single string input.
+    // Old /pipeline/feature-extraction/ returned number[] (flat). Handle both.
+    const data = await res.json() as number[] | number[][];
+    if (Array.isArray(data[0])) return (data as number[][])[0];
+    return data as number[];
 
   } catch (err) {
     console.error('[embeddings] fetch failed:', err);
