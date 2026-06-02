@@ -4,9 +4,10 @@ import mongoose, { Document, Schema } from 'mongoose';
 // Types
 // ─────────────────────────────────────────────
 
-export type MessageRole = 'user' | 'assistant';
-export type Language    = 'en' | 'pidgin' | 'yoruba' | 'hausa';
-export type Intent      =
+export type MessageRole       = 'user' | 'assistant';
+export type Language          = 'en' | 'pidgin' | 'yoruba' | 'hausa';
+export type FacilitatorStatus = 'pending' | 'reviewed' | 'resolved';
+export type Intent            =
   | 'menstrual_hygiene'
   | 'environment'
   | 'digital_skills'
@@ -27,16 +28,22 @@ export interface IMessage {
 }
 
 export interface IConversation extends Document {
-  _id:         mongoose.Types.ObjectId;
-  userId:      mongoose.Types.ObjectId | null;  // null = anonymous session
-  ageGroup:    '10-13' | '14-18' | null;
-  messages:    IMessage[];
-  isAnonymous: boolean;
-  language:    Language;
-  flagged:     boolean;   // true if safeguarding keyword detected
-  flagReason:  string | null;
-  createdAt:   Date;
-  updatedAt:   Date;
+  _id:               mongoose.Types.ObjectId;
+  userId:            mongoose.Types.ObjectId | null;  // null = anonymous session
+  ageGroup:          '10-13' | '14-18' | null;
+  messages:          IMessage[];
+  isAnonymous:       boolean;
+  language:          Language;
+  flagged:           boolean;
+  flagReason:        string | null;
+  // Facilitator workflow (only populated when flagged = true)
+  facilitatorStatus: FacilitatorStatus;
+  facilitatorNote:   string | null;   // internal note visible only to facilitator
+  facilitatorReply:  string | null;   // message sent back to the girl
+  reviewedBy:        mongoose.Types.ObjectId | null;
+  reviewedAt:        Date | null;
+  createdAt:         Date;
+  updatedAt:         Date;
 }
 
 // ─────────────────────────────────────────────
@@ -89,6 +96,15 @@ const ConversationSchema = new Schema<IConversation>(
     language:    { type: String,  default: 'en'        },
     flagged:     { type: Boolean, default: false       },
     flagReason:  { type: String,  default: null        },
+    facilitatorStatus: {
+      type:    String,
+      enum:    ['pending', 'reviewed', 'resolved'],
+      default: 'pending',
+    },
+    facilitatorNote:  { type: String,                default: null },
+    facilitatorReply: { type: String,                default: null },
+    reviewedBy:       { type: Schema.Types.ObjectId, ref: 'User', default: null },
+    reviewedAt:       { type: Date,                  default: null },
   },
   { timestamps: true }
 );
@@ -99,5 +115,6 @@ const ConversationSchema = new Schema<IConversation>(
 
 ConversationSchema.index({ userId: 1, createdAt: -1 });
 ConversationSchema.index({ flagged: 1 });
+ConversationSchema.index({ flagged: 1, facilitatorStatus: 1 });
 
 export default mongoose.model<IConversation>('Conversation', ConversationSchema);

@@ -3,20 +3,49 @@ import { Language, Intent } from '../models/Conversation';
 // ─────────────────────────────────────────────
 // Language detection
 //
-// Simple keyword-based detector for the four
-// languages GGCL operates in.
-// Falls back to 'en' if no match is found.
+// Diacritic-tolerant: strips Unicode combining
+// marks before matching so "jowo" matches "jọwọ"
+// and "don allah" matches users who omit accents.
 // ─────────────────────────────────────────────
 
-const PIDGIN_MARKERS  = ['wetin', 'dey', 'na', 'abeg', 'oga', 'wahala', 'no be', 'how far', 'e dey'];
-const YORUBA_MARKERS  = ['ẹ jọ', 'jọwọ', 'ṣe', 'bẹẹni', 'rara', 'pẹlú', 'fún mi', 'kí ni', 'bawo'];
-const HAUSA_MARKERS   = ['yaya', 'ina', 'lafiya', 'sannu', 'marhaba', 'don allah', 'me yasa', 'yaushe'];
+function normalize(text: string): string {
+  return text
+    .toLowerCase()
+    .normalize('NFD')                       // decompose diacritics
+    .replace(/[̀-ͯ]/g, '');       // strip combining marks
+}
+
+const PIDGIN_MARKERS = [
+  'wetin', 'dey', 'abeg', 'oga', 'wahala', 'no be', 'how far', 'e dey',
+  'na im', 'sabi', 'chop', 'waka', 'naso', 'comot', 'vex', 'dem', 'una',
+];
+
+const YORUBA_MARKERS = [
+  // diacritic forms + normalized equivalents already handled by normalize()
+  'e jo', 'jowo', 'se', 'beeni', 'rara', 'pelu', 'fun mi', 'ki ni', 'bawo',
+  'ekaaro', 'ekaasan', 'ekale', 'e kaabo', 'alafia', 'modupe', 'odabo',
+  'mo fe', 'nibo', 'tani', 'igba wo', 'kilode',
+];
+
+const HAUSA_MARKERS = [
+  'yaya', 'ina kwana', 'lafiya', 'sannu', 'marhaba', 'don allah',
+  'me yasa', 'yaushe', 'ina', 'ka yi', 'ki yi', 'mun gode',
+  'wane ne', 'wace ce', 'ina son', 'ban san ba', 'ko',
+];
 
 export function detectLanguage(text: string): Language {
-  const lower = text.toLowerCase();
+  const norm = normalize(text);
+  // Build a set of individual words for whole-word matching
+  const wordSet = new Set(norm.split(/\W+/).filter(w => w.length > 0));
 
   const score = (markers: string[]) =>
-    markers.filter(m => lower.includes(m)).length;
+    markers.filter(m => {
+      const normM = normalize(m);
+      // Multi-word phrases: substring match is safe (long enough to be unambiguous)
+      if (normM.includes(' ')) return norm.includes(normM);
+      // Single words: whole-word match only — prevents 'to' matching inside 'stomach'
+      return wordSet.has(normM);
+    }).length;
 
   const scores: Record<Language, number> = {
     pidgin: score(PIDGIN_MARKERS),
@@ -28,96 +57,92 @@ export function detectLanguage(text: string): Language {
   const best = (Object.entries(scores) as [Language, number][])
     .sort((a, b) => b[1] - a[1])[0];
 
-  // Only override English if we have at least 1 clear match
   return best[1] > 0 ? best[0] : 'en';
 }
 
 // ─────────────────────────────────────────────
 // Intent classification
-//
-// Maps the user's message to one of the four
-// GGCL curriculum pillars, or flags safeguarding
-// concerns, off-topic messages and greetings.
-//
-// Order matters — safeguarding is checked first.
 // ─────────────────────────────────────────────
 
-// Safeguarding — checked before everything else
+// Safeguarding — highest priority
 const SAFEGUARDING_KEYWORDS = [
   'abuse', 'assault', 'rape', 'molest', 'hurt me', 'beat me',
   'forced me', 'touching me', 'touches me', 'unsafe', 'in danger',
   'scared of', 'harass', 'threat', 'suicid', 'self harm', 'kill myself',
+  // Pidgin equivalents
+  'dem dey beat', 'e touch me', 'e force me', 'dem dey harass',
+  // Yoruba-ish
+  'o na mi', 'o fi mi lara',
 ];
 
-// Pillar 1 — Period & Menstrual Hygiene
 const MENSTRUAL_KEYWORDS = [
   'period', 'menstrual', 'menstruation', 'cycle', 'cramp', 'pad',
   'tampon', 'flow', 'discharge', 'ovulation', 'uterus', 'vagina',
   'puberty', 'hygiene', 'irregular', 'spotting', 'bloat', 'pms',
   'first period', 'menarche', 'sanitary', 'cloth pad',
+  'pain', 'ache', 'stomach', 'abdomen', 'lower abdomen', 'belly',
+  'nkan osu', 'nkan mi de',  // Yoruba
+  'al haila', 'haila',        // Hausa
 ];
 
-// Pillar 2 — Environment
 const ENVIRONMENT_KEYWORDS = [
   'climate', 'environment', 'recycle', 'recycling', 'waste', 'pollution',
   'plastic', 'carbon', 'global warming', 'eco', 'sustainable', 'green',
   'compost', 'biodiversity', 'forest', 'energy', 'solar', 'emissions',
-  'ozone', 'litter', 'rubbish', 'trash',
+  'ozone', 'litter', 'rubbish', 'trash', 'clean up', 'tree',
 ];
 
-// Pillar 3 — Digital & AI Skills
 const DIGITAL_KEYWORDS = [
   'internet', 'online', 'social media', 'computer', 'digital', 'ai',
   'artificial intelligence', 'cyberbully', 'password', 'hack', 'phishing',
   'safe online', 'website', 'google', 'email', 'download', 'app',
   'smartphone', 'coding', 'programming', 'technology', 'tech', 'data',
-  'privacy', 'screen time',
+  'privacy', 'screen time', 'wifi', 'whatsapp', 'tiktok', 'instagram',
 ];
 
-// Pillar 4 — Life Skills & Financial Literacy
 const LIFE_SKILLS_KEYWORDS = [
   'money', 'save', 'saving', 'budget', 'spend', 'finance', 'naira',
   'business', 'entrepreneur', 'invest', 'bank', 'income', 'expense',
   'confidence', 'self esteem', 'self-esteem', 'leadership', 'goal',
   'career', 'future', 'communication', 'assertive', 'speak up',
   'relationship', 'boundary', 'stress', 'anxiety', 'emotion',
+  'owo', 'iṣowo', 'àjowọ',  // Yoruba finance
+  'kudi', 'kasuwanci',        // Hausa finance
 ];
 
-// Greetings
 const GREETING_KEYWORDS = [
   'hello', 'hi', 'hey', 'good morning', 'good afternoon', 'good evening',
   'how are you', 'what can you do', 'who are you', 'what is amara',
+  'how far', 'ekaaro', 'sannu', 'bawo ni',
 ];
 
-// ─────────────────────────────────────────────
-// Score helper — counts keyword hits
-// ─────────────────────────────────────────────
-
 function scoreKeywords(text: string, keywords: string[]): number {
-  const lower = text.toLowerCase();
-  return keywords.filter(kw => lower.includes(kw)).length;
+  const norm = normalize(text);
+  const wordSet = new Set(norm.split(/\W+/).filter(w => w.length > 0));
+  return keywords.filter(kw => {
+    const normKw = normalize(kw);
+    // Multi-word phrases: substring match
+    if (normKw.includes(' ')) return norm.includes(normKw);
+    // Single keywords >= 5 chars: substring match is safe (e.g. 'menstrual', 'period')
+    if (normKw.length >= 5) return norm.includes(normKw);
+    // Short single keywords (e.g. 'ai', 'app'): whole-word match only
+    return wordSet.has(normKw);
+  }).length;
 }
-
-// ─────────────────────────────────────────────
-// Main classifier
-// ─────────────────────────────────────────────
 
 export function classifyIntent(text: string): Intent {
   const lower = text.toLowerCase();
 
-  // 1. Safeguarding always wins
-  if (SAFEGUARDING_KEYWORDS.some(kw => lower.includes(kw))) {
+  if (SAFEGUARDING_KEYWORDS.some(kw => normalize(lower).includes(normalize(kw)))) {
     return 'safeguarding';
   }
 
-  // 2. Greetings — short messages only
-  if (text.trim().split(' ').length <= 8) {
-    if (GREETING_KEYWORDS.some(kw => lower.includes(kw))) {
+  if (text.trim().split(/\s+/).length <= 8) {
+    if (GREETING_KEYWORDS.some(kw => normalize(lower).includes(normalize(kw)))) {
       return 'greeting';
     }
   }
 
-  // 3. Score all four pillars
   const scores: Record<string, number> = {
     menstrual_hygiene: scoreKeywords(text, MENSTRUAL_KEYWORDS),
     environment:       scoreKeywords(text, ENVIRONMENT_KEYWORDS),
@@ -127,25 +152,18 @@ export function classifyIntent(text: string): Intent {
 
   const best = Object.entries(scores).sort((a, b) => b[1] - a[1])[0];
 
-  // 4. If no pillar keyword matched at all → off_topic
   if (best[1] === 0) return 'off_topic';
 
   return best[0] as Intent;
 }
 
-// ─────────────────────────────────────────────
-// Safeguarding check (standalone export)
-// Used by chatController to flag conversations
-// separately from intent classification
-// ─────────────────────────────────────────────
-
 export function isSafeguardingConcern(text: string): boolean {
-  const lower = text.toLowerCase();
-  return SAFEGUARDING_KEYWORDS.some(kw => lower.includes(kw));
+  const norm = normalize(text);
+  return SAFEGUARDING_KEYWORDS.some(kw => norm.includes(normalize(kw)));
 }
 
 export function extractFlagReason(text: string): string | null {
-  const lower = text.toLowerCase();
-  const matched = SAFEGUARDING_KEYWORDS.find(kw => lower.includes(kw));
+  const norm    = normalize(text);
+  const matched = SAFEGUARDING_KEYWORDS.find(kw => norm.includes(normalize(kw)));
   return matched ? `Keyword detected: "${matched}"` : null;
 }

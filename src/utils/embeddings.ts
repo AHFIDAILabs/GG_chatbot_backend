@@ -14,8 +14,10 @@ const HF_API_KEY = process.env.HUGGINGFACE_API_KEY;
 const HF_MODEL   = process.env.HF_EMBEDDING_MODEL
   ?? 'sentence-transformers/all-MiniLM-L6-v2';
 
-// HuggingFace Serverless Inference API v1 — feature-extraction endpoint
-const HF_URL = `https://router.huggingface.co/hf-inference/models/${HF_MODEL}/v1/feature-extraction`;
+// HuggingFace Inference API — feature-extraction endpoint
+// Uses api-inference.huggingface.co (free tier) instead of router.huggingface.co/hf-inference
+// which requires Inference Providers permission (PRO account only)
+const HF_URL = `https://api-inference.huggingface.co/pipeline/feature-extraction/${HF_MODEL}`;
 
 // ─────────────────────────────────────────────
 // Embed a single string

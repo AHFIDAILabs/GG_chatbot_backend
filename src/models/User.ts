@@ -5,27 +5,31 @@ import bcrypt from 'bcryptjs';
 // Types
 // ─────────────────────────────────────────────
 
-export type UserRole     = 'girl' | 'facilitator';
+export type UserRole     = 'girl' | 'facilitator' | 'admin';
 export type AgeGroupUser = '10-13' | '14-18' | null;
 
 export interface IUser extends Document {
-  _id:           mongoose.Types.ObjectId;
-  name:          string;
-  email:         string;
-  password:      string;
-  role:          UserRole;
-  ageGroup:      AgeGroupUser;       // only relevant for girls
-  consentGiven:  boolean;            // parental/self consent for under-18
-  consentAt:     Date | null;
-  preferredLang: string;             // 'en' | 'pidgin' | 'yoruba' | 'hausa'
-  avatar:        string | null;      // Cloudinary URL
-  facilitatorId: mongoose.Types.ObjectId | null; // which facilitator supervises this girl
-  isActive:      boolean;
-  lastLoginAt:   Date | null;
-  createdAt:     Date;
-  updatedAt:     Date;
+  _id:              mongoose.Types.ObjectId;
+  name:             string;
+  email:            string;
+  password:         string;
+  role:             UserRole;
+  ageGroup:         AgeGroupUser;
+  consentGiven:     boolean;
+  consentAt:        Date | null;
+  preferredLang:    string;
+  avatar:           string | null;
+  facilitatorId:    mongoose.Types.ObjectId | null;
+  isActive:         boolean;
+  lastLoginAt:      Date | null;
+  // Learning progress
+  savedTopics:      string[];        // topic IDs bookmarked from resources page
+  resourcesVisited: string[];        // topic IDs the user has viewed/explored
+  badges:           string[];        // earned badge keys e.g. "pillar_1_complete"
+  groupCode:        string | null;   // facilitator-only: short code girls use to join their cohort
+  createdAt:        Date;
+  updatedAt:        Date;
 
-  // Instance methods
   comparePassword(candidate: string): Promise<boolean>;
 }
 
@@ -56,7 +60,7 @@ const UserSchema = new Schema<IUser>(
     },
     role: {
       type:    String,
-      enum:    ['girl', 'facilitator'],
+      enum:    ['girl', 'facilitator', 'admin'],
       default: 'girl',
     },
     ageGroup: {
@@ -73,8 +77,12 @@ const UserSchema = new Schema<IUser>(
       ref:     'User',
       default: null,
     },
-    isActive:   { type: Boolean, default: true },
-    lastLoginAt:{ type: Date,    default: null },
+    isActive:         { type: Boolean,   default: true  },
+    lastLoginAt:      { type: Date,      default: null  },
+    savedTopics:      { type: [String],  default: []    },
+    resourcesVisited: { type: [String],  default: []    },
+    badges:           { type: [String],  default: []    },
+    groupCode:        { type: String,    default: null  },
   },
   { timestamps: true }
 );
@@ -107,5 +115,6 @@ UserSchema.methods.comparePassword = async function (
 UserSchema.index({ email: 1 });
 UserSchema.index({ role: 1 });
 UserSchema.index({ facilitatorId: 1 });
+UserSchema.index({ groupCode: 1 }, { unique: true, sparse: true }); // sparse: null values excluded
 
 export default mongoose.model<IUser>('User', UserSchema);

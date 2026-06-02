@@ -50,8 +50,8 @@ function buildSystemPrompt(ageGroup: string | null, language: string): string {
 
   const langNote =
     language !== "en"
-      ? `The girl prefers ${language}. Respond in ${language} if you can, or mix naturally with English.`
-      : "";
+      ? `The girl prefers ${language}. Respond ENTIRELY in ${language} — do not mix with English or other languages.`
+      : "The girl is writing in English. Respond ENTIRELY in English.";
 
   return `You are Amara, a warm, knowledgeable and trusted learning companion for the GGCL Green Girls Academy — an NGO supporting adolescent girls aged 10–18 in Nigeria.
 
@@ -66,14 +66,19 @@ ${langNote}
 
 You will be given relevant excerpts from the GGCL training manual. Use them as your primary source. If the excerpts do not fully answer the question, supplement with your own accurate knowledge — but stay within the four curriculum pillars.
 
-If a question is completely unrelated to the four pillars, gently acknowledge it and redirect: "That's a bit outside what I cover, but I'm here to help with periods, the environment, digital skills and life skills. What would you like to explore?"
+**Greetings & Off-Topic Questions:**
+- If the question is a greeting (e.g., "How are you?", "Hello", "Hi"), respond with a SHORT greeting (1–2 sentences max) and then ask what they'd like to explore.
+- Example: "Hello! I'm doing well, thanks for asking! 😊 What would you like to explore?"
+- If a question is completely unrelated to the four pillars, gently acknowledge it and redirect: "That's a bit outside what I cover, but I'm here to help with periods, the environment, digital skills and life skills. What would you like to explore?"
 
 Rules:
 - Never be dismissive, judgmental or condescending
 - Validate emotions before giving information
 - End every response with encouragement — girls should leave feeling capable and supported
 - Keep responses focused: 150–250 words unless the topic genuinely needs more depth
-- Use **bold** for key terms and bullet points for lists`;
+- Use **bold** for key terms and bullet points for lists
+- NEVER mix languages — respond entirely in the language the girl used`;
+
 }
 
 // ─────────────────────────────────────────────
@@ -134,7 +139,8 @@ async function retrieveChunks(
 
       if (results.length > 0) {
         // Re-rank with exact cosine similarity for precision
-        return results
+        // Filter out low-confidence matches (score < 0.65) to avoid irrelevant context
+        const filtered = results
           .map((r: any) => ({
             text: r.text,
             source: r.source,
@@ -142,8 +148,11 @@ async function retrieveChunks(
             sessionTitle: r.sessionTitle,
             score: r.score ?? 0,
           }))
+          .filter((r: any) => r.score >= 0.65)
           .sort((a, b) => b.score - a.score)
           .slice(0, topK);
+
+        return filtered.length > 0 ? filtered : [];
       }
     } catch (err) {
       console.warn(
@@ -251,8 +260,10 @@ export const sendMessage = asyncHandler(async (req: Request, res: Response) => {
   const language = detectLanguage(question);
   const intent = classifyIntent(question);
 
-  // Keep conversation language up to date
-  if (language !== "en") conversation.language = language;
+  console.log(`[CHAT] Question: "${question.slice(0, 50)}" | Intent: ${intent} | Language: ${language}`);
+
+  // Always update conversation language to reflect the current message's language
+  conversation.language = language;
 
   // ── Add user message to history ───────────
   conversation.messages.push({
@@ -286,8 +297,19 @@ export const sendMessage = asyncHandler(async (req: Request, res: Response) => {
     if (safeguarding) {
       // ── Safeguarding path ─────────────────
       systemPrompt = SAFEGUARDING_PROMPT;
+      console.log(`[CHAT] Safeguarding triggered`);
+    } else if (intent === 'greeting' || intent === 'off_topic') {
+      // ── Greeting / off-topic path (no RAG) ─
+      console.log(`[CHAT] Intent: ${intent} — skipping RAG`);
+      // Skip retrieval for greetings and off-topic — respond warmly without curriculum context
+      systemPrompt = buildSystemPrompt(
+        conversation.ageGroup ?? user?.ageGroup ?? null,
+        language,
+      );
+      contextBlock = "";
     } else {
       // ── Normal RAG path ───────────────────
+      console.log(`[CHAT] Pillar intent: ${intent} — retrieving RAG context`);
       const ageGroup = conversation.ageGroup ?? user?.ageGroup ?? null;
       retrievedChunks = await retrieveChunks(question, intent, ageGroup);
 
@@ -297,11 +319,16 @@ export const sendMessage = asyncHandler(async (req: Request, res: Response) => {
           .join("\n\n");
 
         pillarSource = retrievedChunks[0].sessionTitle ?? null;
+        console.log(`[CHAT] Retrieved ${retrievedChunks.length} chunks from pillar: ${pillarSource}`);
+      } else if (question.trim().split(' ').length < 4) {
+        // No pillar match + very short query → likely off-topic
+        console.log(`[CHAT] No chunks found for short query — treating as off-topic`);
+        contextBlock = "";
       }
 
       systemPrompt = buildSystemPrompt(
         conversation.ageGroup ?? user?.ageGroup ?? null,
-        conversation.language,
+        language,
       );
     }
 
@@ -322,7 +349,8 @@ export const sendMessage = asyncHandler(async (req: Request, res: Response) => {
       : question;
 
     // ── Stream from Groq (with rate-limit retry) ──────────────────────
-    let stream: Awaited<ReturnType<typeof groq.chat.completions.create>>;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let stream!: any;
     let lastErr: unknown;
     for (let attempt = 0; attempt < 3; attempt++) {
       try {

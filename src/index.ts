@@ -24,8 +24,15 @@ requiredEnvVars.forEach((key) => {
 });
 
 // ── Routes ────────────────────────────────────────────────────────────────────
-import authRoutes from "./routes/authRoutes";
-import chatRoutes from "./routes/chatRoutes";
+import authRoutes           from "./routes/authRoutes";
+import chatRoutes           from "./routes/chatRoutes";
+import trackerRoutes        from "./routes/trackerRoutes";
+import wellbeingRoutes      from "./routes/wellbeingRoutes";
+import goalsRoutes          from "./routes/goalsRoutes";
+import facilitatorRoutes    from "./routes/facilitatorRoutes";
+import inviteRoutes         from "./routes/inviteRoutes";
+import adminRoutes          from "./routes/adminRoutes";
+import directMessageRoutes  from "./routes/directMessageRoutes";
 
 // ── Middleware ────────────────────────────────────────────────────────────────
 import { errorHandler } from "./middlewares/errorHandler";
@@ -135,8 +142,13 @@ app.get("/api/v1", (_req: Request, res: Response) => {
     message: "Welcome to the Amara API — GGCL Green Girls Academy",
     version: "1.0.0",
     endpoints: {
-      auth: "/api/v1/auth",
-      chat: "/api/v1/chat",
+      auth:        "/api/v1/auth",
+      chat:        "/api/v1/chat",
+      tracker:     "/api/v1/tracker",
+      wellbeing:   "/api/v1/wellbeing",
+      goals:       "/api/v1/goals",
+      facilitator: "/api/v1/facilitator",
+      invite:      "/api/v1/invite",
     },
   });
 });
@@ -145,8 +157,15 @@ app.get("/api/v1", (_req: Request, res: Response) => {
 // ROUTES
 // ============================================
 
-app.use("/api/v1/auth", authRoutes);
-app.use("/api/v1/chat", chatRoutes);
+app.use("/api/v1/auth",        authRoutes);
+app.use("/api/v1/chat",        chatRoutes);
+app.use("/api/v1/tracker",     trackerRoutes);
+app.use("/api/v1/wellbeing",   wellbeingRoutes);
+app.use("/api/v1/goals",       goalsRoutes);
+app.use("/api/v1/facilitator", facilitatorRoutes);
+app.use("/api/v1/invite",      inviteRoutes);
+app.use("/api/v1/admin",       adminRoutes);
+app.use("/api/v1/messages",    directMessageRoutes);
 
 // ============================================
 // ERROR HANDLING
@@ -165,6 +184,10 @@ const gracefulShutdown = async (signal: string): Promise<void> => {
   if (isShuttingDown) return;
   isShuttingDown = true;
   console.log(`\n${signal} received. Shutting down gracefully...`);
+  setTimeout(() => {
+    console.error("⚠️  Forced shutdown after timeout");
+    process.exit(1);
+  }, 10_000);
   try {
     server.close(() => console.log("✅ HTTP server closed"));
     await mongoose.connection.close();
@@ -175,10 +198,6 @@ const gracefulShutdown = async (signal: string): Promise<void> => {
     console.error("❌ Error during shutdown:", err);
     process.exit(1);
   }
-  setTimeout(() => {
-    console.error("⚠️  Forced shutdown after timeout");
-    process.exit(1);
-  }, 10_000);
 };
 
 process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));

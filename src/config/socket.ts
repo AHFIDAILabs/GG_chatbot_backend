@@ -35,6 +35,24 @@ export function initSocket(server: HttpServer): void {
       console.log(`[socket] ${socket.id} joined ${room}`);
     });
 
+    // ── Direct messaging ──────────────────────────────────────────────────
+    // Each user joins their own private room identified by their userId.
+    // Client emits: socket.emit('dm:join', userId)
+    socket.on('dm:join', (userId: string) => {
+      socket.join(`user:${userId}`);
+      console.log(`[socket] ${socket.id} joined user:${userId}`);
+    });
+
+    // Broadcast a typing indicator to the recipient
+    socket.on('dm:typing', ({ recipientId, senderName }: { recipientId: string; senderName: string }) => {
+      socket.to(`user:${recipientId}`).emit('dm:typing', { senderName });
+    });
+
+    // Broadcast a typing-stopped indicator to the recipient
+    socket.on('dm:typing:stop', ({ recipientId }: { recipientId: string }) => {
+      socket.to(`user:${recipientId}`).emit('dm:typing:stop');
+    });
+
     socket.on('disconnect', () => {
       console.log(`[socket] disconnected: ${socket.id}`);
     });

@@ -132,13 +132,33 @@ export interface SafeguardingAlertPayload {
   timestamp: string;
 }
 
+export interface DMMessagePayload {
+  threadId:       string;
+  message:        { sender: 'girl' | 'facilitator'; content: string; timestamp: string; readAt: string | null };
+  girlId?:        string;
+  girlName?:      string;
+  facilitatorId?: string;
+}
+
+export interface DMReadPayload {
+  by:      'girl' | 'facilitator';
+  girlId?: string;
+}
+
 export interface ServerToClientEvents {
   "safeguarding:alert": (payload: SafeguardingAlertPayload) => void;
-  "chat:token": (token: string) => void;
-  "chat:done": () => void;
-  "chat:error": (message: string) => void;
+  "chat:token":         (token: string) => void;
+  "chat:done":          () => void;
+  "chat:error":         (message: string) => void;
+  "dm:message":         (payload: DMMessagePayload) => void;
+  "dm:read":            (payload: DMReadPayload) => void;
+  "dm:typing":          (payload: { senderName: string }) => void;
+  "dm:typing:stop":     () => void;
 }
 
 export interface ClientToServerEvents {
-  "room:join": (room: string) => void;
+  "room:join":      (room: string) => void;
+  "dm:join":        (userId: string) => void;
+  "dm:typing":      (data: { recipientId: string; senderName: string }) => void;
+  "dm:typing:stop": (data: { recipientId: string }) => void;
 }

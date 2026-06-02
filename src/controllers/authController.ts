@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from "express";
 import User from "../models/User";
+import FacilitatorInvite from "../models/FacilitatorInvite";
 import { AuthRequest } from "../types";
 import { Errors, asyncHandler } from "../utils/appError";
 import { sendSuccess } from "../utils/apiResponse";
@@ -12,33 +13,102 @@ import {
 } from "../utils/jwt";
 
 // ─────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────
+
+// Generates a short readable group code: GGA-XXXX (e.g. GGA-K4M9)
+async function generateGroupCode(): Promise<string> {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // unambiguous charset (no O/0/I/1)
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const suffix = Array.from({ length: 4 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+    const code   = `GGA-${suffix}`;
+    const exists = await User.findOne({ groupCode: code });
+    if (!exists) return code;
+  }
+  throw Errors.internal('Could not generate a unique group code — try again');
+}
+
+// ─────────────────────────────────────────────
 // POST /api/auth/register
 // Public
+//
+// Two flows:
+//   1. Girl: normal fields + optional groupCode
+//      → links to facilitator who owns that groupCode
+//   2. Facilitator: must include a valid inviteToken
+//      → validates token, sets role=facilitator, generates groupCode
 // ─────────────────────────────────────────────
 
 export const register = asyncHandler(async (req: Request, res: Response) => {
-  const { name, email, password, role, ageGroup, consentGiven } = req.body;
+  const { name, email, password, ageGroup, consentGiven, inviteToken, groupCode } = req.body;
 
-  // Check duplicate email
+  // ── Check duplicate email ───────────────────
   const existing = await User.findOne({ email });
-  if (existing)
-    throw Errors.conflict("An account with this email already exists");
+  if (existing) throw Errors.conflict("An account with this email already exists");
 
-  // For girls under 13, consent must be given
+  // ── Facilitator flow (invite token required) ─
+  if (inviteToken) {
+    const invite = await FacilitatorInvite.findOne({ token: inviteToken });
+
+    if (!invite)              throw Errors.badRequest('Invite link not found or already used');
+    if (invite.used)          throw Errors.badRequest('This invite link has already been used');
+    if (invite.expiresAt < new Date()) throw Errors.badRequest('This invite link has expired');
+
+    const code = await generateGroupCode();
+
+    const user = await User.create({
+      name, email, password,
+      role:        'facilitator',
+      ageGroup:    null,
+      groupCode:   code,
+      lastLoginAt: new Date(),
+    });
+
+    // Mark invite as consumed
+    invite.used   = true;
+    invite.usedBy = user._id;
+    await invite.save();
+
+    const accessToken  = signAccessToken(user._id.toString(), user.role, user.ageGroup);
+    const refreshToken = signRefreshToken(user._id.toString());
+
+    res
+      .cookie('access_token',  accessToken,  accessCookieOptions)
+      .cookie('refresh_token', refreshToken, refreshCookieOptions);
+
+    return sendSuccess(res, {
+      user: {
+        id: user._id, name: user.name, email: user.email,
+        role: user.role, ageGroup: user.ageGroup,
+        avatar: user.avatar, groupCode: user.groupCode,
+      },
+    }, 201);
+  }
+
+  // ── Girl flow ────────────────────────────────
   if (ageGroup === "10-13" && !consentGiven) {
-    throw Errors.badRequest(
-      "Parental or guardian consent is required for users aged 10–13",
+    throw Errors.badRequest("Parental or guardian consent is required for users aged 10–13");
+  }
+
+  // Auto-assign to the facilitator with the fewest girls (load-balancing)
+  let facilitatorId: string | null = null;
+  const facilitators = await User.find({ role: 'facilitator', isActive: true }).select('_id').lean();
+  if (facilitators.length > 0) {
+    const counts = await Promise.all(
+      facilitators.map(f => User.countDocuments({ facilitatorId: f._id, role: 'girl' })),
     );
+    const minIndex   = counts.indexOf(Math.min(...counts));
+    facilitatorId    = facilitators[minIndex]._id.toString();
   }
 
   const user = await User.create({
-    name,
-    email,
-    password,
-    role: role ?? "girl",
-    ageGroup: ageGroup ?? null,
+    name, email, password,
+    role:         'girl',
+    ageGroup:     ageGroup ?? null,
     consentGiven: consentGiven ?? false,
-    consentAt: consentGiven ? new Date() : null,
+    consentAt:    consentGiven ? new Date() : null,
+    facilitatorId,
+    lastLoginAt:  new Date(),
   });
 
   // Issue tokens immediately after registration
@@ -53,16 +123,25 @@ export const register = asyncHandler(async (req: Request, res: Response) => {
     .cookie("access_token", accessToken, accessCookieOptions)
     .cookie("refresh_token", refreshToken, refreshCookieOptions);
 
+  // Resolve facilitator name if assigned
+  let facilitatorName: string | null = null;
+  if (facilitatorId) {
+    const fac = await User.findById(facilitatorId).select('name').lean();
+    facilitatorName = fac?.name ?? null;
+  }
+
   sendSuccess(
     res,
     {
       user: {
-        id: user._id,
-        name: user.name,
-        email: user.email,
-        role: user.role,
-        ageGroup: user.ageGroup,
-        avatar: user.avatar,
+        id:             user._id,
+        name:           user.name,
+        email:          user.email,
+        role:           user.role,
+        ageGroup:       user.ageGroup,
+        avatar:         user.avatar,
+        facilitatorId:  facilitatorId ?? null,
+        facilitatorName,
       },
     },
     201,
@@ -101,28 +180,19 @@ export const login = asyncHandler(async (req: Request, res: Response) => {
   );
   const refreshToken = signRefreshToken(user._id.toString());
 
-  res.cookie('access_token', accessToken, {
-  httpOnly: true,
-  secure:   true,           // required for cross-domain
-  sameSite: 'none',         // required for cross-domain — NOT 'lax' or 'strict'
-  maxAge:   15 * 60 * 1000, // 15 minutes
-});
-
-res.cookie('refresh_token', refreshToken, {
-  httpOnly: true,
-  secure:   true,
-  sameSite: 'none',         // same here
-  maxAge:   7 * 24 * 60 * 60 * 1000, // 7 days
-});
+  res
+    .cookie('access_token',  accessToken,  accessCookieOptions)
+    .cookie('refresh_token', refreshToken, refreshCookieOptions);
   sendSuccess(res, {
     user: {
-      id: user._id,
-      name: user.name,
-      email: user.email,
-      role: user.role,
-      ageGroup: user.ageGroup,
-      avatar: user.avatar,
+      id:          user._id,
+      name:        user.name,
+      email:       user.email,
+      role:        user.role,
+      ageGroup:    user.ageGroup,
+      avatar:      user.avatar,
       lastLoginAt: user.lastLoginAt,
+      groupCode:   user.groupCode ?? null,
     },
   });
 });
@@ -182,21 +252,27 @@ export const logout = asyncHandler(async (_req: Request, res: Response) => {
 export const me = asyncHandler(async (req: Request, res: Response) => {
   const { userId } = (req as AuthRequest).user;
 
-  const user = await User.findById(userId).select("-__v");
+  const user = await User.findById(userId).select("-__v").populate('facilitatorId', 'name');
   if (!user) throw Errors.notFound("User not found");
 
   sendSuccess(res, {
     user: {
-      id: user._id,
-      name: user.name,
-      email: user.email,
-      role: user.role,
-      ageGroup: user.ageGroup,
-      avatar: user.avatar,
-      preferredLang: user.preferredLang,
-      consentGiven: user.consentGiven,
-      lastLoginAt: user.lastLoginAt,
-      createdAt: user.createdAt,
+      id:               user._id,
+      name:             user.name,
+      email:            user.email,
+      role:             user.role,
+      ageGroup:         user.ageGroup,
+      avatar:           user.avatar,
+      preferredLang:    user.preferredLang,
+      consentGiven:     user.consentGiven,
+      lastLoginAt:      user.lastLoginAt,
+      createdAt:        user.createdAt,
+      groupCode:        user.groupCode ?? null,
+      facilitatorId:    (user.facilitatorId as any)?._id?.toString() ?? user.facilitatorId?.toString() ?? null,
+      facilitatorName:  (user.facilitatorId as any)?.name ?? null,
+      savedTopics:      user.savedTopics,
+      resourcesVisited: user.resourcesVisited,
+      badges:           user.badges,
     },
   });
 });
@@ -225,6 +301,133 @@ export const updateMe = asyncHandler(async (req: Request, res: Response) => {
   if (!user) throw Errors.notFound("User not found");
 
   sendSuccess(res, { user });
+});
+
+// ─────────────────────────────────────────────
+// PATCH /api/auth/me/facilitator
+// Private — girl enters a group code to link herself
+// to a facilitator after registration.
+// Fails if she's already assigned (use admin to reassign).
+// ─────────────────────────────────────────────
+
+export const setFacilitator = asyncHandler(async (req: Request, res: Response) => {
+  const { userId } = (req as AuthRequest).user;
+  const { groupCode } = req.body;
+
+  if (!groupCode?.trim()) throw Errors.badRequest('Group code is required');
+
+  const girl = await User.findById(userId);
+  if (!girl)              throw Errors.notFound('User not found');
+  if (girl.role !== 'girl') throw Errors.forbidden('Only girl accounts can link to a facilitator');
+  if (girl.facilitatorId)   throw Errors.conflict('You are already linked to a facilitator. Contact an admin to change this.');
+
+  const facilitator = await User.findOne({ groupCode: groupCode.trim().toUpperCase(), role: 'facilitator' });
+  if (!facilitator) throw Errors.badRequest('Group code not found — check the code and try again');
+
+  girl.facilitatorId = facilitator._id;
+  await girl.save({ validateBeforeSave: false });
+
+  sendSuccess(res, {
+    message:     'Successfully linked to facilitator',
+    facilitator: { id: facilitator._id, name: facilitator.name },
+  });
+});
+
+// ─────────────────────────────────────────────
+// POST /api/auth/bookmarks
+// Private — bookmark a topic (idempotent via $addToSet)
+// ─────────────────────────────────────────────
+
+export const addBookmark = asyncHandler(async (req: Request, res: Response) => {
+  const { userId }  = (req as AuthRequest).user;
+  const { topicId } = req.body;
+  if (!topicId?.trim()) throw Errors.badRequest('topicId is required');
+
+  const user = await User.findByIdAndUpdate(
+    userId,
+    { $addToSet: { savedTopics: topicId.trim() } },
+    { new: true },
+  ).select('savedTopics');
+
+  if (!user) throw Errors.notFound('User not found');
+
+  sendSuccess(res, { savedTopics: user.savedTopics });
+});
+
+// ─────────────────────────────────────────────
+// DELETE /api/auth/bookmarks/:topicId
+// Private — remove a bookmark
+// ─────────────────────────────────────────────
+
+export const removeBookmark = asyncHandler(async (req: Request, res: Response) => {
+  const { userId }  = (req as AuthRequest).user;
+  const { topicId } = req.params;
+
+  const user = await User.findByIdAndUpdate(
+    userId,
+    { $pull: { savedTopics: topicId } },
+    { new: true },
+  ).select('savedTopics');
+
+  if (!user) throw Errors.notFound('User not found');
+
+  sendSuccess(res, { savedTopics: user.savedTopics });
+});
+
+// ─────────────────────────────────────────────
+// GET /api/auth/bookmarks
+// Private — list saved topic IDs
+// ─────────────────────────────────────────────
+
+export const getBookmarks = asyncHandler(async (req: Request, res: Response) => {
+  const { userId } = (req as AuthRequest).user;
+
+  const user = await User.findById(userId).select('savedTopics').lean();
+  if (!user) throw Errors.notFound('User not found');
+
+  sendSuccess(res, { savedTopics: user.savedTopics });
+});
+
+// ─────────────────────────────────────────────
+// POST /api/auth/resources/visited
+// Private — mark a resource/topic as visited
+// ─────────────────────────────────────────────
+
+export const markVisited = asyncHandler(async (req: Request, res: Response) => {
+  const { userId }  = (req as AuthRequest).user;
+  const { topicId } = req.body;
+  if (!topicId?.trim()) throw Errors.badRequest('topicId is required');
+
+  const user = await User.findByIdAndUpdate(
+    userId,
+    { $addToSet: { resourcesVisited: topicId.trim() } },
+    { new: true },
+  ).select('resourcesVisited badges');
+
+  if (!user) throw Errors.notFound('User not found');
+
+  sendSuccess(res, { resourcesVisited: user.resourcesVisited, badges: user.badges });
+});
+
+// ─────────────────────────────────────────────
+// GET /api/auth/resources/visited
+// Private — list visited topic IDs + earned badges
+// ─────────────────────────────────────────────
+
+export const getProgress = asyncHandler(async (req: Request, res: Response) => {
+  const { userId } = (req as AuthRequest).user;
+
+  const user = await User.findById(userId)
+    .select('savedTopics resourcesVisited badges')
+    .lean();
+
+  if (!user) throw Errors.notFound('User not found');
+
+  sendSuccess(res, {
+    savedTopics:      user.savedTopics,
+    resourcesVisited: user.resourcesVisited,
+    badges:           user.badges,
+  });
 });
 
 // ─────────────────────────────────────────────
